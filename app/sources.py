@@ -3,7 +3,7 @@ import asyncio
 import json
 import os
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 from .core import new_event, canonical, categories, activity_type, iso_now
@@ -21,6 +21,11 @@ class Source:
     keyword: bool = False
     search_only: bool = False
     club: bool = False
+    enabled: bool = True
+    note: str = ''
+    replacements: tuple = ()
+    adapter: str = ''
+    match_query: bool = False
 
 SOURCES = [
     Source('club_yapp','YAPP','동아리·연합 커뮤니티','https://www.yapp.co.kr/',r'(?:www\.)?yapp\.co\.kr/.*',club=True),
@@ -85,23 +90,57 @@ SOURCES = [
 
 TECH = re.compile(r'개발|테크|(?<![A-Za-z])AI(?![A-Za-z])|GenAI|LLM|데이터|클라우드|백엔드|해커톤|스터디|소프트웨어|보안|코딩|프로그래|GitHub|AWS|Cloud|DevOps|Python|Spring|(?<![A-Za-z])RAG(?![A-Za-z])|OSS',re.I)
 
+REPAIRS = {
+    'meetup':dict(url='https://www.meetup.com/awskrug/',note='행사 탭의 빈 SSR 대신 공식 그룹 첫 화면의 예정 행사와 Event JSON을 읽습니다.'),
+    'aifactory':dict(url='https://aifactory.space/ko/competition',pattern=r'aifactory\.space/(?:ko/|en/)?(?:competitions|competition|task)/\d+',note='새 언어 경로와 복수형 competitions 상세 주소를 지원합니다.'),
+    'microsoft':dict(url='https://www.microsoft.com/ko-kr/events',pattern=r'(?:microsoft\.com/[a-z-]+/events/local-events/[^/?]+|events\.microsoft\.com/event/[^?#]+)',keyword=False,note='이전 Events 도메인에서 이동한 공식 지역별 행사 목록을 사용합니다.'),
+    'mongodb':dict(pattern=r'mongodb\.com/(?:events|resources)/.+',adapter='mongodb',note='공개 HTML의 PathFactory JSON에서 Live Webinar·Workshop·Event만 추출합니다. 녹화 영상은 제외합니다.'),
+    'jetbrains':dict(url='https://blog.jetbrains.com/category/events/',pattern=r'blog\.jetbrains\.com/[^/]+/20\d{2}/\d{2}/.+',note='공식 블로그 Events 분류에서 행사 공지를 읽습니다. 일반 제품 소식은 제외합니다.'),
+    'oracle':dict(name='Oracle Developer 공식 행사',url='https://www.oracle.com/uk/developer/events/',pattern=r'(?:ai-dev\.deeplearning\.ai/|reg\.rf\.oracle\.com/flow/.+)',keyword=False,note='일반 검색 화면 대신 개발자 행사 페이지가 직접 연결한 등록 페이지를 읽습니다. 글로벌 행사 포함.'),
+    'cncf':dict(url='https://ocgroups.dev/cncf',pattern=r'(?:ocgroups\.dev/cncf/group/[^/]+/event/[^/?]+|events\.linuxfoundation\.org/[^/?]+)',note='기존 community.cncf.io가 이전한 공식 Open Community Groups 목록입니다.'),
+    'openai':dict(name='OpenAI Codex 커뮤니티 행사',url='https://luma.com/codex-community',pattern=r'luma\.com/(?!codex-community$|discover$|signin$)[a-zA-Z0-9-]+$',note='OpenAI 공식 개발자 Community/Meetups 페이지가 연결하는 Luma 캘린더입니다.'),
+    'pycon':dict(url='https://2026.pycon.kr/',adapter='event_page',note='공식 2026 연례 행사 안내입니다. 지난 행사도 포함되며 신규 모집으로 단정하지 않습니다.'),
+    'meta':dict(name='Meta Connect 공식 안내',url='https://developers.meta.com/connect/',adapter='event_page',search_only=False,note='삭제된 dev.meta.ai/events 대신 공식 Connect 안내를 확인합니다. 현재는 지난 행사 다시보기입니다.'),
+    'jumpit':dict(note='텍스트 없는 이미지 배너도 행사 상세 링크를 추출하고 원문에서 제목·접수를 확인합니다.'),
+}
+RETIRED = {
+    'onoffmix':('robots.txt에서 자동 수집 금지. 행사 범위는 StartupJobs로 보완하며 온오프믹스 전체를 대신한다고 보장하지 않습니다.',('startupjobs',)),
+    'teampik':('사이트 TLS 인증서 만료. 같은 목적의 사이드 프로젝트·모두모임 모집 목록으로 대체합니다.',('sideproject','modulabs')),
+    'wanted':('GitHub 러너에서 robots 확인 HTTP 403. 공개 개발자 행사 목록으로 보완합니다.',('startupjobs','jumpit')),
+    'rocketpunch':('공개 첫 화면 HTTP 403, 행사 전용 목록 확인 불가. StartupJobs로 보완합니다.',('startupjobs',)),
+    'linkedin':('robots.txt에서 자동 수집 금지. 공개 행사·커뮤니티 원문으로 보완합니다.',('startupjobs','modulabs')),
+    'partiful':('소개 페이지에는 행사 목록이 없고 Explore는 일반 친목 행사 중심입니다. 개발자 행사 목록으로 대체합니다.',('startupjobs',)),
+    'disquiet':('개편된 홈은 제품·일반 게시글 중심이며 프로젝트 모집 전용 목록이 아닙니다. 실제 모집 목록으로 대체합니다.',('sideproject','modulabs')),
+}
+SOURCES=[replace(s,**REPAIRS.get(s.id,{})) for s in SOURCES]
+SOURCES=[replace(s,enabled=False,note=RETIRED[s.id][0],replacements=RETIRED[s.id][1]) if s.id in RETIRED else s for s in SOURCES]
+SOURCES += [
+    Source('startupjobs','StartupJobs · 개발자 행사','행사 플랫폼','https://www.startupjobs.kr/events',r'startupjobs\.kr/events/\d+-[^/?]+',keyword=True,note='국내 행사 보완 소스입니다. 기술 키워드로 거르고 원문에서 개별 검증합니다.'),
+    Source('sideproject','사이드 프로젝트 · 팀원 모집','스터디·프로젝트','https://sideproject.co.kr/projects/',r'sideproject\.co\.kr/projects/?\?.*\bidx=\d+',keyword=True,match_query=True,note='프로젝트 상세 게시물의 idx를 식별합니다. 단순 목록·페이지 이동은 제외합니다.'),
+    Source('modulabs','모두의연구소 · 모두모임','스터디·프로젝트','https://modulabs.co.kr/community/momos',r'modulabs\.co\.kr/community/momos/\d+$',keyword=True,note='공개 스터디·세미나 모집 목록입니다. 채팅·회원 정보·피드는 수집하지 않습니다.'),
+]
+
 def catalog():
-    return [asdict(s) for s in SOURCES]
+    return [{**asdict(s),'replacements':list(s.replacements)} for s in SOURCES]
 
 def source_match(url,source):
     parsed=urlsplit(url)
     host=(parsed.hostname or '').removeprefix('www.')
-    return bool(re.match('^(?:'+source.pattern+')',host+parsed.path,re.I)) if source.pattern else False
+    target=host+parsed.path+('?' + parsed.query if source.match_query and parsed.query else '')
+    return bool(re.match('^(?:'+source.pattern+')',target,re.I)) if source.pattern else False
 
 def extract_links(html, base_url, source):
     soup=BeautifulSoup(html,'html.parser')
     found={}
     for a in soup.select('a[href]'):
+        if source.id=='openai' and 'event-link' not in a.get('class',[]):continue
         href=urljoin(base_url,a['href'])
         heading=a.select_one('h1,h2,h3,h4,[class*="title"],[data-testid*="title"]')
+        if source.id=='aifactory':heading=a.select_one('p.font-bold') or heading
         lines=[x for x in a.get_text('\n',strip=True).splitlines() if x not in ('모집중','모집완료','무료','유료')]
-        title=heading.get_text(' ',strip=True) if heading else (lines[0] if lines else a.get('title') or '')
-        if re.fullmatch(r'Register(?: now)?|Learn more|Read more|Details|등록하기|자세히 보기',title,re.I):
+        title=heading.get_text(' ',strip=True) if heading else (lines[0] if lines else a.get('aria-label') or a.get('title') or '')
+        if not title and source.id=='jumpit' and source_match(href,source):title='점핏 · 개발자 이벤트 안내'
+        if re.fullmatch(r'Register(?: now| today)?|Learn more|Learn about the hackathon|Read more|Details|등록 및 세부 정보|등록하기|자세히 보기',title,re.I):
             parent=a.parent
             for _ in range(4):
                 if parent is None:break
@@ -130,15 +169,34 @@ def extract_links(html, base_url, source):
             pass
     # Links in SSR JSON are source records, never executed JavaScript.
     for script in soup.select('script#__NEXT_DATA__,script[type="application/ld+json"]'):
+        if source.id=='openai':continue
         try:
             nodes=json_nodes(json.loads(script.string or script.get_text()))
             for n in nodes:
                 title=n.get('title') or n.get('name') or n.get('projectName')
-                href=n.get('url') or n.get('link')
+                href=n.get('eventUrl') or n.get('url') or n.get('link')
                 if isinstance(title,str) and isinstance(href,str):
                     extra=extract_anchor(title,href,base_url,source)
-                    if extra: found.setdefault(extra['canonical_url'],extra)
+                    if extra:
+                        # Meetup's named Event object is more precise than a card's price/seat label.
+                        if n.get('eventUrl'):found[extra['canonical_url']]=extra
+                        else:found.setdefault(extra['canonical_url'],extra)
         except (ValueError,TypeError,RecursionError):pass
+    if source.adapter=='mongodb':
+        for script in soup.select('script'):
+            text=script.get_text()
+            marker=re.search(r'window\.__PATHFACTORY__\s*=\s*',text)
+            if not marker:continue
+            try:data,_=json.JSONDecoder().raw_decode(text[marker.end():])
+            except ValueError:continue
+            for n in json_nodes(data):
+                if n.get('contentTypeName') not in ('Live Webinar','Live Workshop','MongoDB Event','Industry Event'):continue
+                href=n.get('canonicalUrl');title=n.get('title')
+                if not isinstance(href,str) or not isinstance(title,str):continue
+                extra=extract_anchor(title,href,base_url,source)
+                if extra:
+                    extra['summary']=(n.get('description') or '')[:700]
+                    found[extra['canonical_url']]=extra
     return list(found.values())[:35]
 
 def extract_anchor(title,href,base,source):
@@ -156,6 +214,10 @@ async def discover(fetcher, renderer, record, selected=None):
         async with sem:
             result={'id':s.id,'name':s.name,'group':s.group,'url':s.url,'count':0,'method':'http','state':'running','error':None}
             try:
+                if not s.enabled:
+                    result.update(state='disabled',method='policy',error=s.note,checked_at=iso_now())
+                    record(result)
+                    return result
                 if not s.url:
                     result.update(state='missing',method='none',error='구체적인 공개 목록 URL이 없는 탐색 범주입니다. 수집 소스 설정이 필요합니다.')
                     record(result)
@@ -168,6 +230,10 @@ async def discover(fetcher, renderer, record, selected=None):
                     topics=r.json().get('topic_list',{}).get('topics',[])
                     items=[new_event(f'https://discuss.pytorch.kr/t/{t["slug"]}/{t["id"]}',t['title'],provenance=s.id)
                            for t in topics if re.search(r'밋업|모임|행사|컨퍼런스|PyTorch Day|워크숍|스터디',t['title'],re.I)]
+                elif s.adapter=='event_page':
+                    title=BeautifulSoup(r.text,'html.parser').title
+                    if not title or not re.search(r'PyCon|Meta Connect',title.get_text(),re.I):raise ValueError('공식 행사 페이지의 제목을 확인하지 못했습니다.')
+                    items=[new_event(s.url,title.get_text()[:180],source=s.name,provenance=s.id,evidence='공식 단일 행사 안내입니다. 모집 가능 여부와 행사 날짜는 원문 검증 전입니다.')]
                 elif s.club:
                     items=club_candidates(r.text,str(r.url),s)
                 else:

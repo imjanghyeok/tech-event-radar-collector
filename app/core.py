@@ -21,6 +21,12 @@ def canonical(url):
         raise ValueError('기본 HTTP 포트만 지원합니다.')
     query = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
              if not k.lower().startswith('utm_') and k.lower() not in ('fbclid', 'gclid')]
+    if p.hostname in ('meetup.com','www.meetup.com'):
+        query=[(k,v) for k,v in query if k.lower()!='eventorigin']
+    if p.hostname in ('mongodb.com','www.mongodb.com'):
+        query=[(k,v) for k,v in query if k.lower()!='tck']
+    if p.hostname in ('sideproject.co.kr','www.sideproject.co.kr') and p.path.rstrip('/')=='/projects':
+        query=[(k,v) for k,v in query if k not in ('q','t')]
     path = re.sub(r'^/(?:ko-kr|en)/', '/', p.path) if 'meetup.com' in p.netloc or 'ticketa.co' in p.netloc else p.path
     return urlunsplit((p.scheme.lower(), p.netloc.lower(), path.rstrip('/') or '/', urlencode(sorted(query)), ''))
 

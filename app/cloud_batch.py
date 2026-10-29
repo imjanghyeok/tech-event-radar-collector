@@ -79,7 +79,7 @@ async def collect(force=False, verify_limit=80, dynamic_budget=24):
             outcomes=await asyncio.gather(*(check(item) for item in selected),return_exceptions=True)
             errors=[e for e in outcomes if isinstance(e,Exception)]
             if errors:raise errors[0]
-            run['state']='partial' if failures or any(s['state']!='ok' for s in run['sources']) else 'completed'
+            run['state']='partial' if failures or any(s['state'] not in ('ok','disabled') for s in run['sources']) else 'completed'
             if failures:run['error']=f'원문 검증 실패 {failures}건 · 대기열에서 다음 날 재시도'
         except Exception as exc:
             run.update(state='failed',error=(type(exc).__name__+': '+str(exc))[:350])
