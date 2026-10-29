@@ -104,6 +104,7 @@ REPAIRS = {
     'jumpit':dict(note='텍스트 없는 이미지 배너도 행사 상세 링크를 추출하고 원문에서 제목·접수를 확인합니다.'),
 }
 RETIRED = {
+    'pycon':('2026 공식 주소도 GitHub 서버에서 HTTP 403. Dev-Event와 공개 스터디 목록으로 보완하며 파이콘 공지 전체 수집은 보장하지 않습니다.',('dev_event','modulabs')),
     'onoffmix':('robots.txt에서 자동 수집 금지. 행사 범위는 StartupJobs로 보완하며 온오프믹스 전체를 대신한다고 보장하지 않습니다.',('startupjobs',)),
     'teampik':('사이트 TLS 인증서 만료. 같은 목적의 사이드 프로젝트·모두모임 모집 목록으로 대체합니다.',('sideproject','modulabs')),
     'wanted':('GitHub 러너에서 robots 확인 HTTP 403. 공개 개발자 행사 목록으로 보완합니다.',('startupjobs','jumpit')),
